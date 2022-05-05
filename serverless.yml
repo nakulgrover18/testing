@@ -1,0 +1,124 @@
+# This serverless yml is used to copy objects from lake runway bucket to lake bucket for binary ingestion
+# v 1.0
+# Note: Since we are using rm command run this in git bash.
+# For full config options, check the docs:
+#    docs.serverless.com
+# to deploy : sls deploy -s dev
+# to remove : sls remove -s dev
+# to test : sls invoke -f details_loader -s dev
+# for pipeline: sls deploy -s dev
+
+service: copy-to-lake-s3
+
+provider:
+  name: aws
+  runtime: python3.7
+  stage: ${opt:stage, 'dev'}
+  appName: ${opt:appName, 'cdo'}
+  assetId: ${opt:assetId, 'a206448'}
+  versionFunctions: false
+  stackName: a${self:custom.asset_id}-${self:custom.app_name}-${self:custom.segment_name_source}-${self:provider.stage}-${self:custom.deploy_environment}-app-copytolakes3-${self:custom.aws_region}
+  stackTags:
+    "tr:resource-owner": ${self:custom.resource_owner}
+    "cdo:segment-name": ${self:custom.segment_name_source}
+    "tr:environment-type": ${self:custom.deploy_environment}
+    "cdo:app-env": ${self:custom.deploy_environment}
+    "tr:application-asset-insight-id": ${self:custom.asset_id}
+    "cdo:deploy-env": ${self:provider.stage}
+    "datadog-account": ${self:custom.datadog-account}
+  deploymentBucket:
+    name:  a${self:custom.asset_id}-${self:custom.app_name}-${self:custom.segment_name_trns}-${self:provider.stage}-${self:custom.deploy_environment}-app-infra-${self:custom.aws_region}
+  deploymentPrefix: copytolakes3
+  cfnRole: arn:aws:iam::${self:custom.aws_account}:role/a${self:custom.asset_id}-${self:custom.app_name}-${self:custom.segment_name_source}-${self:provider.stage}-${self:custom.deploy_environment}-app-cfexecution-${self:custom.aws_region}
+  environment:
+    ENV_VARIABLE_JSON: >
+      {"lake_bucket":"a${self:custom.asset_id}-${self:custom.app_name}-${self:custom.segment_name_source}-${self:provider.stage}-${self:custom.deploy_environment}-app-datalake-${self:custom.aws_region}",
+      "region":"${self:custom.aws_region}",
+      "clust_arn":"${self:custom.rds_cluster_arn_for_datalake}",
+      "secret_arn": "${self:custom.appuser_secret_arn_for_source}",
+      "database":"EDL_OPS_DB",
+      "schema": "control_file_ingestion",
+      "table": "CONTROL_FILE_BINARY_DATA",      "sqs_url":"https://sqs.${self:custom.aws_region}.amazonaws.com/${self:custom.aws_account}/a${self:custom.asset_id}-${self:custom.app_name}-${self:custom.segment_name_source}-${self:provider.stage}-${self:custom.deploy_environment}-app-ziphandle-${self:custom.aws_region}.fifo"
+      }
+    LOG_LEVEL: INFO
+
+functions:
+  copy_to_lake_s3:
+    description: This lambda will copy the objects from lake runway bucket to lake bucket for binary ingestion
+    handler: copy_to_lake_s3.lambda_handler
+    name: a${self:custom.asset_id}-${self:custom.app_name}-${self:custom.segment_name_source}-${self:provider.stage}-${self:custom.deploy_environment}-app-copytolakes3-${self:custom.aws_region}
+    role: arn:aws:iam::${self:custom.aws_account}:role/a${self:custom.asset_id}-${self:custom.app_name}-${self:custom.segment_name_source}-${self:provider.stage}-${self:custom.deploy_environment}-app-dataexecution-${self:custom.aws_region}
+    memorySize: ${self:custom.lambda_memory}
+    timeout: ${self:custom.lambda_timeout}
+    layers:
+      - "${self:custom.common_lib}"
+      - "${self:custom.rds_pg_lib}"
+    vpc:
+      subnetIds:
+        "Fn::Split":
+          - ','
+          - ${self:custom.privateSubnetIds}
+      securityGroupIds:
+        "Fn::Split":
+          - ","
+          - ${self:custom.privateSecurityGroupIds}
+
+    tags:
+      "tr:resource-owner": ${self:custom.resource_owner}
+      "cdo:segment-name": ${self:custom.segment_name_source}
+      "tr:environment-type": ${self:custom.deploy_environment}
+      "cdo:app-env": ${self:custom.deploy_environment}
+      "tr:application-asset-insight-id": ${self:custom.asset_id}
+      "cdo:deploy-env": ${self:provider.stage}
+      "datadog-account": ${self:custom.datadog-account}
+    events:
+      - s3:
+          bucket: a${self:custom.asset_id}-${self:custom.app_name}-${self:custom.segment_name_source}-${self:provider.stage}-${self:custom.deploy_environment}-app-datalakerunway-${self:custom.aws_region}
+          event: s3:ObjectCreated:Put
+          existing: true
+      - s3:
+          bucket: a${self:custom.asset_id}-${self:custom.app_name}-${self:custom.segment_name_source}-${self:provider.stage}-${self:custom.deploy_environment}-app-datalakerunway-${self:custom.aws_region}
+          event: s3:ObjectCreated:CompleteMultipartUpload
+          existing: true
+      - s3:
+          bucket: a${self:custom.asset_id}-${self:custom.app_name}-${self:custom.segment_name_source}-${self:provider.stage}-${self:custom.deploy_environment}-app-datalakerunway-${self:custom.aws_region}
+          event: s3:ObjectCreated:Copy
+          existing: true          
+package:
+  individually: true
+  exclude:
+    - "tests/**"
+    - "__pycache__/**"
+    - ".pytest_cache/**"
+    - "package.json"
+    - "package-lock.json"
+    - "serverless.yml.bak"
+
+
+custom:
+   asset_id: '${ssm:/${self:provider.assetId}/${self:provider.appName}/${self:provider.stage}/asset_insight_id}'
+   app_name: '${ssm:/${self:provider.assetId}/${self:provider.appName}/${self:provider.stage}/app_name}'
+   deploy_environment: '${ssm:/${self:provider.assetId}/${self:provider.appName}/${self:provider.stage}/deploy_environment}'
+   target_account_name: '${ssm:/${self:provider.assetId}/${self:provider.appName}/${self:provider.stage}/target_account_name}'
+   aws_account: '${ssm:/${self:provider.assetId}/${self:provider.appName}/${self:provider.stage}/aws_account}'
+   aws_region: '${ssm:/${self:provider.assetId}/${self:provider.appName}/${self:provider.stage}/aws_region}'
+   resource_owner: '${ssm:/${self:provider.assetId}/${self:provider.appName}/${self:provider.stage}/resource_owner}'
+   segment_name: 'enrichment'
+   segment_name_trns: 'transform'
+   segment_name_delivery: 'delivery'
+   segment_name_source: 'source'
+   environment-type: '${ssm:/${self:provider.assetId}/${self:provider.appName}/${self:provider.stage}/environment_type}'
+   datadog-account: '${ssm:/${self:provider.assetId}/${self:provider.appName}/${self:provider.stage}/datadog_account}'
+   privateSubnetIds: '${ssm:/${self:provider.assetId}/cdo/${self:provider.stage}/privateSubnetIds}'
+   privateSecurityGroupIds: '${ssm:/${self:provider.assetId}/cdo/${self:provider.stage}/privateSecurityGroupIds}'
+   custom_lib: '${ssm:/${self:provider.assetId}/${self:provider.appName}/${self:provider.stage}/temp/enrich-custom-lib}'
+   load_types: '${ssm:/${self:provider.assetId}/${self:provider.appName}/${self:provider.stage}/load_types_ui}'
+   support_email: '${ssm:/${self:provider.assetId}/${self:provider.appName}/${self:provider.stage}/support_email}'
+   datauploadui_secret_arn: '${ssm:/${self:provider.assetId}/${self:provider.appName}/${self:provider.stage}/datauploadui_secret_arn}'
+   datauploadui-lib: '${ssm:/${self:provider.assetId}/${self:provider.appName}/${self:provider.stage}/common-datauploadui-lib}'
+   common_lib: '${ssm:/${self:provider.assetId}/${self:provider.appName}/${self:provider.stage}/common-lib}'
+   lambda_timeout: ${opt:timeout, 60}
+   lambda_memory: ${opt:memory, 2880}
+   rds_pg_lib: '${ssm:/${self:provider.assetId}/${self:provider.appName}/${self:provider.stage}/rds-pg-lib}'
+   rds_cluster_arn_for_datalake: '${ssm:/${self:provider.assetId}/${self:provider.appName}/${self:provider.stage}/rds_cluster_arn_for_datalake}'
+   appuser_secret_arn_for_source: '${ssm:/${self:provider.assetId}/cdo/${self:provider.stage}/appuser_secret_arn_for_source}'
